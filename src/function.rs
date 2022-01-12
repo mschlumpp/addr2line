@@ -3,7 +3,8 @@ use alloc::vec::Vec;
 use core::cmp::Ordering;
 use core::iter;
 
-use crate::lazy::LazyCell;
+use once_cell::race::OnceBox;
+
 use crate::maybe_small;
 use crate::{Error, RangeAttributes, ResDwarf};
 
@@ -12,7 +13,7 @@ pub(crate) struct Functions<R: gimli::Reader> {
     pub(crate) functions: Box<
         [(
             gimli::UnitOffset<R::Offset>,
-            LazyCell<Result<Function<R>, Error>>,
+            OnceBox<Result<Function<R>, Error>>,
         )],
     >,
     /// List of `DW_TAG_subprogram` address ranges in the unit.
@@ -101,7 +102,7 @@ impl<R: gimli::Reader> Functions<R> {
                             function: function_index,
                         });
                     })? {
-                        functions.push((dw_die_offset, LazyCell::new()));
+                        functions.push((dw_die_offset, OnceBox::new()));
                     }
                 } else {
                     entries.skip_attributes(abbrev.attributes())?;
@@ -147,7 +148,7 @@ impl<R: gimli::Reader> Functions<R> {
         for function in &*self.functions {
             function
                 .1
-                .borrow_with(|| Function::parse(function.0, unit, dwarf))
+                .get_or_init(|| Box::new(Function::parse(function.0, unit, dwarf)))
                 .as_ref()
                 .map_err(Error::clone)?;
         }

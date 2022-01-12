@@ -36,8 +36,11 @@ pub extern crate fallible_iterator;
 pub extern crate gimli;
 #[cfg(feature = "object")]
 pub extern crate object;
+extern crate once_cell;
 #[cfg(feature = "rustc-demangle")]
 extern crate rustc_demangle;
+
+use once_cell::race::OnceBox;
 
 use alloc::borrow::Cow;
 use alloc::boxed::Box;
@@ -54,7 +57,6 @@ use core::num::NonZeroU64;
 use core::u64;
 
 use crate::function::{Function, Functions, InlinedFunction};
-use crate::lazy::LazyCell;
 
 #[cfg(feature = "smallvec")]
 mod maybe_small {
@@ -68,7 +70,6 @@ mod maybe_small {
 }
 
 mod function;
-mod lazy;
 
 type Error = gimli::Error;
 
@@ -490,8 +491,8 @@ impl<R: gimli::Reader> ResDwarf<R> {
                 offset,
                 dw_unit,
                 lang,
-                lines: LazyCell::new(),
-                funcs: LazyCell::new(),
+                lines: OnceBox::new(),
+                funcs: OnceBox::new(),
             });
         }
 
@@ -548,8 +549,8 @@ struct ResUnit<R: gimli::Reader> {
     offset: gimli::DebugInfoOffset<R::Offset>,
     dw_unit: gimli::Unit<R>,
     lang: Option<gimli::DwLang>,
-    lines: LazyCell<Result<Lines, Error>>,
-    funcs: LazyCell<Result<Functions<R>, Error>>,
+    lines: OnceBox<Result<Lines, Error>>,
+    funcs: OnceBox<Result<Functions<R>, Error>>,
 }
 
 impl<R: gimli::Reader> ResUnit<R> {
@@ -559,11 +560,14 @@ impl<R: gimli::Reader> ResUnit<R> {
             None => return Ok(None),
         };
         self.lines
-            .borrow_with(|| {
+            .get_or_init(|| {
                 let mut sequences = Vec::new();
                 let mut sequence_rows = Vec::<LineRow>::new();
                 let mut rows = ilnp.clone().rows();
-                while let Some((_, row)) = rows.next_row()? {
+                while let Some((_, row)) = match rows.next_row() {
+                    Ok(it) => it,
+                    Err(err) => return Box::new(Err(err)),
+                } {
                     if row.end_sequence() {
                         if let Some(start) = sequence_rows.first().map(|x| x.address) {
                             let end = row.address();
@@ -607,19 +611,25 @@ impl<R: gimli::Reader> ResUnit<R> {
                 let mut files = Vec::new();
                 let header = ilnp.header();
                 match header.file(0) {
-                    Some(file) => files.push(self.render_file(file, header, sections)?),
+                    Some(file) => files.push(match self.render_file(file, header, sections) {
+                        Ok(it) => it,
+                        Err(err) => return Box::new(Err(err)),
+                    }),
                     None => files.push(String::from("")), // DWARF version <= 4 may not have 0th index
                 }
                 let mut index = 1;
                 while let Some(file) = header.file(index) {
-                    files.push(self.render_file(file, header, sections)?);
+                    files.push(match self.render_file(file, header, sections) {
+                        Ok(it) => it,
+                        Err(err) => return Box::new(Err(err)),
+                    });
                     index += 1;
                 }
 
-                Ok(Lines {
+                Box::new(Ok(Lines {
                     files: files.into_boxed_slice(),
                     sequences: sequences.into_boxed_slice(),
-                })
+                }))
             })
             .as_ref()
             .map(Some)
@@ -628,14 +638,14 @@ impl<R: gimli::Reader> ResUnit<R> {
 
     fn parse_functions(&self, dwarf: &ResDwarf<R>) -> Result<&Functions<R>, Error> {
         self.funcs
-            .borrow_with(|| Functions::parse(&self.dw_unit, dwarf))
+            .get_or_init(|| Box::new(Functions::parse(&self.dw_unit, dwarf)))
             .as_ref()
             .map_err(Error::clone)
     }
 
     fn parse_inlined_functions(&self, dwarf: &ResDwarf<R>) -> Result<(), Error> {
         self.funcs
-            .borrow_with(|| Functions::parse(&self.dw_unit, dwarf))
+            .get_or_init(|| Box::new(Functions::parse(&self.dw_unit, dwarf)))
             .as_ref()
             .map_err(Error::clone)?
             .parse_inlined_functions(&self.dw_unit, dwarf)
@@ -678,7 +688,7 @@ impl<R: gimli::Reader> ResUnit<R> {
                 let (offset, ref function) = functions.functions[function_index];
                 Some(
                     function
-                        .borrow_with(|| Function::parse(offset, &self.dw_unit, dwarf))
+                        .get_or_init(|| Box::new(Function::parse(offset, &self.dw_unit, dwarf)))
                         .as_ref()
                         .map_err(Error::clone)?,
                 )
