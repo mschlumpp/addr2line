@@ -158,7 +158,7 @@ impl<R: gimli::Reader> Functions<R> {
         for function in &*self.functions {
             function
                 .1
-                .borrow_with(|| Function::parse(function.0, file, unit, ctx, sections))
+                .get_or_init(|| Function::parse(function.0, file, unit, ctx, sections))
                 .as_ref()
                 .map_err(Error::clone)?;
         }

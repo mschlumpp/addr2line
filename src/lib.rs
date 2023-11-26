@@ -704,7 +704,7 @@ impl<R: gimli::Reader> Context<R> {
                 // Try to get some ranges from the line program sequences.
                 if let Some(ref ilnp) = dw_unit.line_program {
                     if let Ok(lines) = lines
-                        .borrow_with(|| Lines::parse(&dw_unit, ilnp.clone(), sections))
+                        .get_or_init(|| Lines::parse(&dw_unit, ilnp.clone(), sections))
                         .as_ref()
                     {
                         for sequence in lines.sequences.iter() {
@@ -1095,14 +1095,14 @@ impl<R: gimli::Reader> ResUnit<R> {
         >,
     > {
         loop {
-            break SimpleLookup::new_complete(match self.dwo.borrow() {
+            break SimpleLookup::new_complete(match self.dwo.get() {
                 Some(Ok(Some(v))) => Ok((DebugFile::Dwo, &*v.0, &v.1)),
                 Some(Ok(None)) => Ok((DebugFile::Primary, &*ctx.sections, &self.dw_unit)),
                 Some(Err(e)) => Err(*e),
                 None => {
                     let dwo_id = match self.dw_unit.dwo_id {
                         None => {
-                            self.dwo.borrow_with(|| Ok(None));
+                            self.dwo.get_or_init(|| Ok(None));
                             continue;
                         }
                         Some(dwo_id) => dwo_id,
@@ -1121,7 +1121,7 @@ impl<R: gimli::Reader> ResUnit<R> {
                     let path = match dwo_name {
                         Ok(v) => v,
                         Err(e) => {
-                            self.dwo.borrow_with(|| Err(e));
+                            self.dwo.get_or_init(|| Err(e));
                             continue;
                         }
                     };
@@ -1149,7 +1149,7 @@ impl<R: gimli::Reader> ResUnit<R> {
                             path,
                             parent: ctx.sections.clone(),
                         },
-                        move |dwo_dwarf| match self.dwo.borrow_with(|| process_dwo(dwo_dwarf)) {
+                        move |dwo_dwarf| match self.dwo.get_or_init(|| process_dwo(dwo_dwarf)) {
                             Ok(Some(v)) => Ok((DebugFile::Dwo, &*v.0, &v.1)),
                             Ok(None) => Ok((DebugFile::Primary, &*ctx.sections, &self.dw_unit)),
                             Err(e) => Err(*e),
@@ -1168,7 +1168,7 @@ impl<R: gimli::Reader> ResUnit<R> {
             None => return Ok(None),
         };
         self.lines
-            .borrow_with(|| Lines::parse(&self.dw_unit, ilnp.clone(), sections))
+            .get_or_init(|| Lines::parse(&self.dw_unit, ilnp.clone(), sections))
             .as_ref()
             .map(Some)
             .map_err(Error::clone)
@@ -1180,7 +1180,7 @@ impl<R: gimli::Reader> ResUnit<R> {
         sections: &gimli::Dwarf<R>,
     ) -> Result<&Functions<R>, Error> {
         self.funcs
-            .borrow_with(|| Functions::parse(unit, sections))
+            .get_or_init(|| Functions::parse(unit, sections))
             .as_ref()
             .map_err(Error::clone)
     }
@@ -1202,7 +1202,7 @@ impl<R: gimli::Reader> ResUnit<R> {
         self.dwarf_and_unit_dwo(ctx).map(move |r| {
             let (file, sections, unit) = r?;
             self.funcs
-                .borrow_with(|| Functions::parse(unit, sections))
+                .get_or_init(|| Functions::parse(unit, sections))
                 .as_ref()
                 .map_err(Error::clone)?
                 .parse_inlined_functions(file, unit, ctx, sections)
@@ -1253,7 +1253,7 @@ impl<R: gimli::Reader> ResUnit<R> {
                     let (offset, ref function) = functions.functions[function_index];
                     Some(
                         function
-                            .borrow_with(|| Function::parse(offset, file, unit, ctx, sections))
+                            .get_or_init(|| Function::parse(offset, file, unit, ctx, sections))
                             .as_ref()
                             .map_err(Error::clone)?,
                     )
